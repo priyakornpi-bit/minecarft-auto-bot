@@ -11,14 +11,22 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 
-/** Small tabular Q-learning implementation with an epsilon-greedy policy. */
+/**
+ * ตัวแทนการเรียนรู้แบบ Q-learning ที่เก็บค่า Q ของแต่ละสถานะและการกระทำไว้ในตาราง
+ * พร้อมใช้นโยบาย epsilon-greedy เพื่อสลับระหว่างการสำรวจและการเลือกการกระทำที่ดีที่สุด
+ */
 public final class QLearningAgent {
+	// ค่า Q ใช้ประมาณผลตอบแทนระยะยาวของการเลือกการกระทำในแต่ละสถานะ
 	private final Map<String, EnumMap<RlAction, Double>> qValues = new java.util.HashMap<>();
 	private final Random random = new Random();
 	private double learningRate = 0.10;
 	private double discount = 0.95;
 	private double explorationRate = 0.15;
 
+	/**
+	 * เลือกการกระทำด้วยนโยบาย epsilon-greedy:
+	 * สุ่มการกระทำบางครั้งเพื่อสำรวจ และเลือกการกระทำที่มีค่า Q สูงสุดในครั้งอื่น ๆ
+	 */
 	public RlAction chooseAction(String state, List<RlAction> legalActions) {
 		if (legalActions.isEmpty()) throw new IllegalArgumentException("At least one legal action is required");
 		if (random.nextDouble() < explorationRate) {
@@ -41,6 +49,10 @@ public final class QLearningAgent {
 		return bestActions.get(random.nextInt(bestActions.size()));
 	}
 
+	/**
+	 * ปรับปรุงค่า Q จากผลตอบแทนที่ได้รับ โดยใช้สมการ Bellman
+	 * และไม่คาดการณ์ค่าของสถานะถัดไปเมื่อสถานะปัจจุบันเป็นสถานะสิ้นสุด
+	 */
 	public void learn(String state, RlAction action, double reward, String nextState,
 			Collection<RlAction> legalNextActions, boolean terminal) {
 		EnumMap<RlAction, Double> stateValues = qValues.computeIfAbsent(state, ignored -> new EnumMap<>(RlAction.class));
@@ -84,7 +96,7 @@ public final class QLearningAgent {
 				double value = Double.parseDouble(columns[2]);
 				qValues.computeIfAbsent(state, ignored -> new EnumMap<>(RlAction.class)).put(action, value);
 			} catch (IllegalArgumentException ignored) {
-				// Ignore malformed rows so one damaged value does not discard the learned table.
+				// ข้ามแถวที่มีข้อมูลไม่ถูกต้อง เพื่อไม่ให้ข้อมูลเสียเพียงแถวเดียวทำให้ตารางทั้งหมดใช้ไม่ได้
 			}
 		}
 	}
