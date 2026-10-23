@@ -1,1 +1,707 @@
+# Minecraft Auto Bot - คู่มือสรุปโปรเจกต์
+
+เอกสารนี้สรุปความสามารถปัจจุบัน วิธีรันโปรเจกต์ โครงสร้างโฟลเดอร์ และหน้าที่ของไฟล์สำคัญทั้งหมดของโปรเจกต์ Minecraft Auto Bot
+
+โปรเจกต์นี้เป็น Minecraft Fabric Client Mod สำหรับทดลองสร้างบอทที่ควบคุมผู้เล่นในโลก Singleplayer โดยเน้นการเคลื่อนที่ เก็บไม้ ป้องกันตัว ขุดแร่ เก็บไอเทม และเตรียมโครงสร้างสำหรับพัฒนา Inventory, Pathfinding และ Reinforcement Learning ต่อไป
+
+---
+
+## 1. วิธีรันโปรเจกต์แบบพื้นฐาน
+
+### 1.1 ตรวจสอบโปรแกรมที่ต้องมี
+
+- Java Development Kit (JDK) 25 ขึ้นไป
+- Git (ถ้าต้องการจัดการเวอร์ชัน)
+- Visual Studio Code หรือ IDE ที่รองรับ Gradle/Java
+- อินเทอร์เน็ตในครั้งแรกที่รัน เพื่อให้ Gradle ดาวน์โหลด Minecraft, Fabric Loader, Fabric API และ dependencies
+
+เวอร์ชันหลักถูกกำหนดไว้ใน `gradle.properties`:
+
+- Minecraft: `26.3`
+- Fabric Loader: `0.19.5`
+- Fabric Loom: `1.18-SNAPSHOT`
+- Fabric API: `0.163.0+26.3`
+- Java: `25`
+
+### 1.2 รันเกมสำหรับพัฒนา
+
+#### Windows
+
+เปิด Command Prompt หรือ Terminal ที่ root ของโปรเจกต์ แล้วรัน:
+
+```bat
 .\gradlew.bat runClient
+```
+
+#### macOS/Linux
+
+ไฟล์ `gradlew` ในบางเครื่องอาจไม่มีสิทธิ์ execute ให้เรียกผ่าน Bash:
+
+```bash
+bash ./gradlew runClient
+```
+
+ถ้าต้องการเพิ่มสิทธิ์ให้เรียกแบบ `./gradlew` ได้:
+
+```bash
+chmod +x gradlew
+./gradlew runClient
+```
+
+คำสั่ง `runClient` จะเปิด Minecraft Development Client ที่โหลด mod นี้เข้าไปแล้ว
+
+### 1.3 การใช้งานในเกม
+
+1. สร้างหรือเข้าโลก Singleplayer
+2. ตรวจสอบว่าผู้เล่นอยู่ในพื้นที่ปลอดภัย
+3. กดปุ่ม `,` เพื่อเปิดหรือปิด Automatic Mode
+4. กดปุ่ม `.` เพื่อหยุดฉุกเฉิน
+5. ดูข้อความสถานะในหน้าจอและแชต
+6. เมื่อบอทหยุด จะบันทึกรายงานไว้ที่ `run/auto-bot-report.txt`
+
+Automatic Mode ใช้ได้เฉพาะ Singleplayer ปัจจุบัน เพราะโค้ดตรวจ `getSingleplayerServer()` เพื่อป้องกันการควบคุมใน Multiplayer
+
+### 1.4 คำสั่งตรวจสอบโค้ด
+
+คอมไพล์ Java ฝั่งทั่วไปและฝั่ง Client:
+
+```bash
+bash ./gradlew compileJava compileClientJava
+```
+
+บน Windows:
+
+```bat
+.\gradlew.bat compileJava compileClientJava
+```
+
+ตรวจ whitespace หรือรูปแบบ diff:
+
+```bash
+git diff --check
+```
+
+สร้างไฟล์ mod สำหรับใช้งาน:
+
+```bash
+bash ./gradlew build
+```
+
+ไฟล์ผลลัพธ์มักอยู่ใน `build/libs/`
+
+---
+
+## 2. ภาพรวมความสามารถของบอทในปัจจุบัน
+
+### 2.1 เปิดและปิดระบบอัตโนมัติ
+
+บอทลงทะเบียนปุ่มควบคุมผ่าน `KeyMapping`:
+
+- `,` เปิด/ปิด Automatic Mode
+- `.` Emergency Stop
+
+เมื่อเปิดระบบ บอทจะเริ่มนับเวลา เก็บค่าจำนวนไม้และแร่ก่อนเริ่มงาน และล้างเป้าหมายเดิมทั้งหมด
+
+### 2.2 การจัดลำดับงาน
+
+ในแต่ละ client tick บอททำงานตามลำดับประมาณนี้:
+
+1. ตรวจปุ่มเปิด/ปิดและปุ่มหยุดฉุกเฉิน
+2. ตรวจว่าโลก ผู้เล่น และ Singleplayer Server พร้อมใช้งาน
+3. สร้าง `PerceptionSnapshot` เพื่ออ่านสถานะโลก
+4. ตรวจความปลอดภัย เช่น เลือด อาหาร ลาวา และพื้นด้านหน้า
+5. ถ้ามีมอนสเตอร์ใกล้ตัว ให้ป้องกันตัวก่อน
+6. ถ้ามีไอเทมที่ต้องการตกอยู่ ให้เดินไปเก็บ
+7. ถ้ายังมีไม้ไม่ถึง 256 ชิ้น ให้ค้นหาและตัดไม้
+8. เมื่อไม้เพียงพอ ให้ค้นหาและขุดแร่
+9. เมื่อหยุด บันทึกรายงานผลการทำงาน
+
+### 2.3 การรับรู้โลก
+
+บอทไม่ได้ดูภาพหน้าจอแบบ Computer Vision แต่ใช้ข้อมูลโดยตรงจาก Minecraft Client API:
+
+- ตำแหน่งผู้เล่น
+- พลังชีวิตและอาหาร
+- มอนสเตอร์ใกล้ตัว
+- ไอเทมที่ตกบนพื้น
+- บล็อกไม้และแร่
+- Collision Shape ของบล็อก
+- ลาวา
+- พื้นด้านหน้าว่าหายหรือไม่
+
+แนวคิดนี้เรียกว่า World-State Perception คืออ่านสถานะจริงจากโลกเกมแทนการวิเคราะห์ภาพ
+
+### 2.4 การเก็บไม้
+
+- สแกนบล็อกที่อยู่ในรัศมีที่กำหนด
+- ตรวจด้วย `BlockTags.LOGS`
+- เลือกต้นไม้ที่ใกล้ที่สุด
+- หันหน้าไปยังต้นไม้
+- เลือกขวานที่ดีที่สุดใน Hotbar ถ้ามี
+- เดินเข้าใกล้และกดปุ่มโจมตีเพื่อทำลายบล็อก
+- ถ้าทางด้านหน้าตัน จะลองเลี้ยวซ้ายหรือขวา
+- ถ้าค้นหาไม่พบต้นไม้ จะขยายระยะค้นหาทีละช่วง สูงสุดประมาณ 96 บล็อก
+- หยุดขั้นตอนเก็บไม้เมื่อมีไม้ใน inventory อย่างน้อย 256 ชิ้น
+
+### 2.5 การป้องกันตัว
+
+- ค้นหา `Monster` ในระยะประมาณ 12 บล็อก
+- เลือกศัตรูที่ใกล้ผู้เล่นที่สุด
+- หันหน้าเข้าหาศัตรู
+- เดินเข้าใกล้เมื่ออยู่ไกลเกินไป
+- โจมตีเมื่อระยะเหมาะสมและ Attack Strength พร้อม
+- นับจำนวนมอนสเตอร์ที่เข้าปะทะและถูกกำจัด
+
+### 2.6 การขุดแร่
+
+- ค้นหาแร่ในพื้นที่รอบตัวประมาณ 6 บล็อก
+- ตรวจแร่ที่ชื่อบล็อกลงท้ายด้วย `_ore`
+- รองรับ `ancient_debris`
+- เลือกแร่ที่ใกล้ที่สุด
+- เน้นแร่ที่เปิดให้เห็นด้านบน
+- เลือกพลั่วที่ดีที่สุดใน Hotbar ถ้ามี
+- หันหน้าไปยังแร่แล้วกดโจมตีเพื่อขุด
+
+ปัจจุบันยังไม่ใช่ระบบขุดเหมืองเต็มรูปแบบ เพราะยังไม่เดินหาแร่ที่ซ่อนหลังผนัง ไม่ขุดเปิดทาง และไม่มีเส้นทาง A* เต็มรูปแบบ
+
+### 2.7 การเก็บไอเทมตกพื้น
+
+- ค้นหา `ItemEntity` ในรัศมีประมาณ 16 บล็อก
+- รับเฉพาะไม้และผลลัพธ์แร่ที่ `ResourcePlanner` ระบุว่าต้องการ
+- ตรวจว่า inventory มีช่องว่างหรือมีกองไอเทมชนิดเดียวกันที่ยังไม่เต็ม
+- จำชนิดและจำนวนไอเทมก่อนเดินไปเก็บ
+- เดินไปยังไอเทมและหยุดเมื่อเข้าใกล้ประมาณ 1.5 บล็อก
+- ตรวจจำนวนใน inventory หลัง `ItemEntity` หายไป
+- ถ้าจำนวนเพิ่มขึ้น ถือว่าเก็บสำเร็จ
+- แยกสถานะไอเทมหาย กระเป๋าเต็ม และเข้าถึงไม่ได้
+
+ข้อจำกัดคือยังไม่ได้ใช้เส้นทางหลายจุดหรือเดินขึ้นลงอย่างซับซ้อน หากสิ่งกีดขวางซับซ้อน บอทอาจหยุดแทนการหาเส้นทางใหม่
+
+### 2.8 ระบบเลือกเครื่องมือ
+
+บอทจะค้นหาเครื่องมือเฉพาะ 9 ช่องของ Hotbar:
+
+- ขวานสำหรับไม้
+- พลั่วสำหรับแร่
+
+ลำดับคะแนนวัสดุโดยประมาณ:
+
+1. Wooden
+2. Stone
+3. Iron
+4. Diamond
+5. Netherite
+
+ยังขาดการตรวจ Durability และยังไม่สามารถดึงเครื่องมือจาก inventory ช่องอื่นหรือคราฟต์เครื่องมือเอง
+
+### 2.9 ระบบความปลอดภัย
+
+บอทหยุดเมื่อ:
+
+- พลังชีวิตไม่เกิน 6
+- อาหารไม่เกิน 6
+- พบลาวาใกล้ตัว
+- พื้นด้านหน้าหาย เสี่ยงตก
+- อยู่ในสถานะปีนหรือร่อน
+- โลกหรือผู้เล่นไม่พร้อมใช้งาน
+
+เมื่อหยุด บอทจะปล่อยปุ่มเดินและโจมตี และพยายามบันทึกเหตุผลลงรายงาน
+
+---
+
+## 3. โครงสร้างโฟลเดอร์
+
+```text
+minecarft-auto-bot/
+├── .github/
+│   ├── agents/
+│   └── workflows/
+├── .gradle/
+├── .vscode/
+├── build/
+├── gradle/
+│   └── wrapper/
+├── src/
+│   ├── main/
+│   │   ├── java/
+│   │   └── resources/
+│   └── client/
+│       ├── java/
+│       └── resources/
+├── .gitattributes
+├── .gitignore
+├── LICENSE
+├── README.md
+├── build.gradle
+├── gradle.properties
+├── gradlew
+├── gradlew.bat
+├── note
+└── settings.gradle
+```
+
+### `.github/`
+
+เก็บไฟล์ที่ใช้กำหนดพฤติกรรมของ Copilot และระบบ CI/CD
+
+- `copilot-instructions.md`: กฎการทำงานของ AI ในโปรเจกต์ เช่น ให้ตอบภาษาไทย ตรวจความปลอดภัย และรัน Gradle หลังแก้ Java
+- `agents/`: Custom Agents ของ Copilot
+- `agents/minecraft-bot-senior.agent.md`: Agent สำหรับช่วยพัฒนาและตรวจสอบ Java/Fabric Minecraft Bot
+- `workflows/build.yml`: GitHub Actions สำหรับคอมไพล์โปรเจกต์อัตโนมัติเมื่อมีการ push หรือเปิด Pull Request
+
+### `.gradle/`
+
+เป็น cache และข้อมูลภายในของ Gradle/Loom เช่น dependencies ที่ดาวน์โหลดแล้ว configuration cache และข้อมูลการ build
+
+ไม่ควรแก้ไขด้วยมือ และโดยทั่วไปไม่ควร commit ไฟล์ภายในโฟลเดอร์นี้
+
+### `.vscode/`
+
+เก็บการตั้งค่าเฉพาะของ Visual Studio Code เช่น Java runtime, formatter หรือการตั้งค่า workspace
+
+### `build/`
+
+เป็นผลลัพธ์ที่ Gradle สร้างขึ้น เช่น:
+
+- class files ที่คอมไพล์แล้ว
+- resources ที่ประมวลผลแล้ว
+- reports
+- ไฟล์ jar
+- ข้อมูลชั่วคราวของ task
+
+ไม่ใช่ source code หลัก และสามารถถูกสร้างใหม่ได้ด้วย Gradle
+
+### `gradle/wrapper/`
+
+เก็บ Gradle Wrapper:
+
+- `gradle-wrapper.jar`: โปรแกรม wrapper
+- `gradle-wrapper.properties`: ระบุเวอร์ชันและ URL ของ Gradle distribution
+
+ช่วยให้ทุกคนในทีมใช้ Gradle เวอร์ชันเดียวกันโดยไม่ต้องติดตั้ง Gradle เอง
+
+### `src/main/`
+
+เป็น source set ฝั่งทั่วไปของ mod ใช้กับ environment ที่ไม่จำกัดเฉพาะ Client
+
+### `src/client/`
+
+เป็น source set ฝั่ง Minecraft Client โดยเฉพาะ ใช้กับระบบควบคุมผู้เล่น ปุ่ม หน้าจอ และ client tick
+
+---
+
+## 4. รายละเอียดไฟล์ Java ฝั่ง Main
+
+### `src/main/java/com/example/TemplateMod.java`
+
+เป็น entrypoint ฝั่งทั่วไปของ Fabric Mod:
+
+- ประกาศ `MOD_ID`
+- สร้าง logger
+- แสดงข้อความว่า mod โหลดแล้ว
+- มี helper `id(String path)` สำหรับสร้าง Minecraft Identifier
+
+คลาสนี้ยังไม่ได้ควบคุมบอทโดยตรง ระบบบอทอยู่ฝั่ง Client
+
+### `src/main/java/com/example/mixin/ExampleMixin.java`
+
+เป็น Mixin ตัวอย่างฝั่งทั่วไปจาก Fabric Template
+
+ปัจจุบันยังไม่มีตรรกะสำคัญของบอท และไม่ได้เป็น controller หลักของระบบ
+
+### `src/main/resources/fabric.mod.json`
+
+เป็น manifest หลักของ Fabric Mod:
+
+- ระบุ mod id และชื่อ mod
+- ระบุเวอร์ชัน Minecraft และ Java ที่ต้องการ
+- ระบุ entrypoint ฝั่ง main และ client
+- ระบุไฟล์ mixin configuration
+- ระบุ dependency ของ Fabric Loader และ Fabric API
+- ระบุ icon ของ mod
+
+---
+
+## 5. รายละเอียดไฟล์ Java ฝั่ง Client
+
+### `src/client/java/com/example/client/TemplateModClient.java`
+
+เป็นคลาสหลักของบอทและเป็น Client Entrypoint
+
+หน้าที่สำคัญ:
+
+- ลงทะเบียนปุ่มเปิด/ปิดและหยุดฉุกเฉิน
+- ลงทะเบียน `ClientTickEvents.END_CLIENT_TICK`
+- ควบคุม state ของบอท
+- ตรวจความปลอดภัย
+- หาและต่อสู้กับมอนสเตอร์
+- หาและตัดไม้
+- หาและขุดแร่
+- หาและเก็บไอเทม
+- เลือกเครื่องมือใน Hotbar
+- ควบคุมปุ่มเดินและโจมตี
+- บันทึกรายงานลง `run/auto-bot-report.txt`
+
+คำศัพท์สำคัญ:
+
+- `targetWood`: ต้นไม้เป้าหมาย
+- `targetOre`: แร่เป้าหมาย
+- `targetMob`: มอนสเตอร์เป้าหมาย
+- `targetItem`: ไอเทมตกพื้นที่กำลังเดินไปเก็บ
+- `autoMode`: สถานะเปิด/ปิดระบบอัตโนมัติ
+- `scanCooldown`: ช่วงพักก่อนสแกนหาแร่ใหม่
+- `blockedTicks`: จำนวน tick ที่ติดสิ่งกีดขวาง
+- `stopInputs`: ปล่อยปุ่มเดินและโจมตี
+
+### `src/client/java/com/example/client/ItemCollectionStatus.java`
+
+เป็น enum สำหรับอธิบายผลการติดตามไอเทม:
+
+- `NONE`: ไม่มีการติดตาม
+- `APPROACHING`: กำลังเดินเข้าใกล้
+- `COLLECTED`: เก็บเข้ากระเป๋าสำเร็จ
+- `DESPAWNED`: ไอเทมหายแต่จำนวนในกระเป๋าไม่เพิ่ม
+- `INACCESSIBLE`: พบอุปสรรคและยังเข้าไม่ถึง
+- `INVENTORY_FULL`: กระเป๋าไม่มีพื้นที่เก็บ
+
+### `src/client/java/com/example/client/perception/PerceptionSnapshot.java`
+
+เป็นระบบรวมข้อมูลการรับรู้โลก ณ ช่วงเวลาหนึ่ง
+
+ข้อมูลที่เก็บ:
+
+- โลกพร้อมใช้งานหรือไม่
+- ตำแหน่งผู้เล่น
+- เลือด
+- อาหาร
+- จำนวนและตำแหน่งมอนสเตอร์ใกล้ที่สุด
+- จำนวนและตำแหน่งไอเทมใกล้ที่สุด
+- ตำแหน่งไม้ใกล้ที่สุด
+- ตำแหน่งแร่ใกล้ที่สุด
+- มีลาวาใกล้หรือไม่
+- บล็อกด้านหน้าตันหรือไม่
+- พื้นด้านหน้าหายหรือไม่
+
+คลาสนี้เป็น Read-only Perception Layer คืออ่านข้อมูล แต่ไม่สั่งการผู้เล่นโดยตรง
+
+### `src/client/java/com/example/client/inventory/InventoryManager.java`
+
+เป็น utility สำหรับอ่าน inventory:
+
+- `canStore(...)`: ตรวจว่ามีช่องว่างหรือกองไอเทมที่รวมได้หรือไม่
+- `count(...)`: นับจำนวนไอเทมชนิดเดียวกันใน inventory
+
+ปัจจุบันยังไม่ได้ย้ายของระหว่างช่อง ไม่ได้เปิดกล่อง และไม่ได้คราฟต์
+
+### `src/client/java/com/example/client/planning/ResourcePlanner.java`
+
+เป็น planner เบื้องต้นสำหรับตัดสินว่าไอเทมตกพื้นใดเป็นทรัพยากรที่ต้องการ:
+
+- Logs
+- Ore blocks/items
+- Raw materials
+- Coal
+- Diamond
+- Emerald
+- Lapis Lazuli
+- Redstone
+- Quartz
+- Amethyst Shard
+
+ปัจจุบันเป็นกฎแบบเขียนตายตัว ยังไม่ได้รับรายการทรัพยากรจากคำสั่งผู้ใช้หรือระบบภารกิจ
+
+### `src/client/java/com/example/client/mixin/ExampleClientMixin.java`
+
+เป็น Mixin ตัวอย่างจาก Fabric Template:
+
+```java
+@Mixin(Minecraft.class)
+public class ExampleClientMixin {
+	@Inject(at = @At("HEAD"), method = "run")
+	private void init(CallbackInfo info) {
+	}
+}
+```
+
+ความหมาย:
+
+- `@Mixin(Minecraft.class)`: ขอแทรกโค้ดเข้าไปในคลาส Minecraft
+- `@Inject`: แทรกโค้ดโดยไม่แก้ source ของ Minecraft โดยตรง
+- `@At("HEAD")`: แทรกตรงจุดเริ่มต้นของเมธอด
+- `method = "run"`: เป้าหมายคือเมธอด `Minecraft.run()`
+
+ปัจจุบันเมธอดว่าง จึงไม่ได้ควบคุมบอท ระบบบอทจริงใช้ Fabric Client Tick Event
+
+---
+
+## 6. รายละเอียดไฟล์ Reinforcement Learning
+
+โฟลเดอร์:
+
+```text
+src/client/java/com/example/client/rl/
+```
+
+### `QLearningAgent.java`
+
+เป็นแกน Q-learning แบบตาราง:
+
+- เก็บค่า Q ของคู่ state/action
+- เลือก action ด้วย epsilon-greedy
+- มีโอกาสสุ่มเพื่อสำรวจ
+- เลือก action ที่มีค่า Q สูงสุดเมื่อใช้ข้อมูลเดิม
+- ปรับค่า Q จาก reward และสถานะถัดไป
+- จำกัด learning rate, discount และ exploration rate ให้อยู่ระหว่าง 0 ถึง 1
+- โหลด Q-table จากไฟล์ TSV
+- บันทึก Q-table กลับไปยังไฟล์
+
+ศัพท์:
+
+- `state`: สถานะปัจจุบัน
+- `action`: การกระทำ
+- `reward`: คะแนนผลลัพธ์
+- `learningRate`: ความเร็วในการเรียนรู้
+- `discount`: น้ำหนักของผลตอบแทนในอนาคต
+- `explorationRate`: โอกาสทดลอง action ใหม่
+
+### `RlAction.java`
+
+กำหนด action ระดับสูงที่ controller สามารถนำไปใช้:
+
+- `FOLLOW_COMMAND`: ทำตามคำสั่ง
+- `EAT`: กินอาหาร
+- `FLEE`: หนี
+- `DEFEND`: ป้องกันตัว
+- `GATHER`: เก็บทรัพยากร
+- `MINE`: ขุดแร่
+- `WAIT`: รอ
+
+ตอนนี้ enum มี action แล้ว แต่ยังไม่ได้เชื่อมทุก action เข้ากับ controller จริง
+
+### `RlCommand.java`
+
+กำหนดบริบทหรือเป้าหมายของผู้ใช้:
+
+- `FOLLOW_USER_COMMAND`
+- `SURVIVE`
+- `KEEP_FED`
+- `GATHER_WOOD`
+- `MINE_ORE`
+
+### `RlState.java`
+
+แปลงข้อมูลผู้เล่นให้เป็น state ที่มีจำนวนสถานะไม่มากเกินไปสำหรับ Q-table:
+
+- แบ่งระดับเลือดเป็นช่วง
+- แบ่งระดับอาหารเป็นช่วง
+- แบ่ง saturation เป็นช่วง
+- ระบุว่ามีศัตรูใกล้หรือไม่
+- เก็บ context ของงาน
+
+เมธอด `key()` สร้าง key ที่ปลอดภัยต่อ delimiter ด้วย Base64 เพื่อใช้เป็น key ใน Q-table
+
+### `RlEpisode.java`
+
+จัดการหนึ่ง episode หรือหนึ่งรอบการเรียนรู้:
+
+- เก็บ state และ action ก่อนหน้า
+- สะสม reward ระหว่างรอ decision ถัดไป
+- เรียก `QLearningAgent.learn(...)` เมื่อเปลี่ยน state
+- เรียกการเรียนรู้แบบ terminal เมื่อจบรอบ
+- reset ข้อมูลเมื่อ episode จบ
+
+### `RewardCalculator.java`
+
+แปลงสถานะการเอาตัวรอดเป็น reward เดียว:
+
+- ให้ reward เมื่อยังมีชีวิต
+- ให้คะแนนเมื่ออาหารสูง
+- ให้คะแนนเมื่อ saturation ดี
+- หักคะแนนเมื่อหิว
+- หักคะแนนเมื่อเลือดต่ำ
+- ลงโทษหนักเมื่อเสียชีวิต
+- ให้คะแนนเมื่อคำสั่งสำเร็จ
+
+### `RewardConfig.java`
+
+เก็บน้ำหนัก reward ไว้รวมที่เดียว เพื่อปรับแต่งง่าย
+
+ค่าเริ่มต้น:
+
+- Alive: `+0.05`
+- Well fed: `+0.20`
+- Good saturation: `+0.10`
+- Hungry penalty: `0.50`
+- Low health penalty: `0.50`
+- Death penalty: `-100.0`
+- Command completed: `+5.0`
+
+ข้อสำคัญ: ระบบ RL เป็นโครงสร้างเตรียมไว้ ปัจจุบัน Automatic Mode หลักยังใช้กฎแบบ heuristic ใน `TemplateModClient`
+
+---
+
+## 7. รายละเอียดไฟล์ Resources และ Mixin
+
+### `src/client/resources/template-mod.client.mixins.json`
+
+ลงทะเบียน client mixin:
+
+- package ของ mixin
+- ระดับความเข้ากันได้ของ Java
+- รายชื่อ `ExampleClientMixin`
+- ค่า injector ที่บังคับให้ injection ต้องพบเป้าหมาย
+
+### `src/main/resources/template-mod.mixins.json`
+
+ลงทะเบียน mixin ฝั่ง main ของ mod
+
+### `src/main/resources/assets/template-mod/icon.png`
+
+ไอคอนที่แสดงในข้อมูล mod
+
+### `src/main/resources/assets/template-mod/lang/en_us.json`
+
+ไฟล์แปลข้อความของ key และชื่อที่แสดงใน Minecraft
+
+---
+
+## 8. รายละเอียดไฟล์ Gradle และโปรเจกต์
+
+### `build.gradle`
+
+กำหนดระบบ build:
+
+- ใช้ Fabric Loom
+- ใช้ Maven Publish
+- แยก source set main และ client
+- กำหนด Minecraft, Fabric Loader และ Fabric API
+- กำหนด Java release 25
+- ประมวลผล `fabric.mod.json`
+- สร้าง source jar
+- ตั้งค่า jar และ publishing
+
+### `gradle.properties`
+
+รวมเวอร์ชันและค่า build:
+
+- เวอร์ชัน Minecraft
+- Fabric Loader
+- Loom
+- Fabric API
+- version ของ mod
+- group ของ Maven
+- memory และ configuration cache ของ Gradle
+
+### `settings.gradle`
+
+กำหนด:
+
+- repository สำหรับ plugin
+- ชื่อ root project
+
+### `gradlew`
+
+Gradle Wrapper สำหรับ macOS/Linux
+
+### `gradlew.bat`
+
+Gradle Wrapper สำหรับ Windows
+
+### `README.md`
+
+เอกสารภาพรวมเดิมของโปรเจกต์ อธิบาย:
+
+- controls
+- Automatic Mode
+- รายงานการทำงาน
+- RL scaffold
+- แนวทางต่อยอด
+- setup เบื้องต้น
+
+### `LICENSE`
+
+ใบอนุญาตของ template/mod
+
+### `.gitignore`
+
+ระบุไฟล์ที่ไม่ควร commit เช่น build output, Gradle cache และไฟล์เฉพาะเครื่อง
+
+### `.gitattributes`
+
+กำหนดพฤติกรรมของ Git เช่น line ending และการจัดการไฟล์บางประเภท
+
+### `note`
+
+เอกสารคู่มือฉบับนี้ ใช้สรุปวิธีรัน ความสามารถ โครงสร้าง และรายละเอียดไฟล์สำหรับการเรียนและการนำเสนอ
+
+---
+
+## 9. โฟลเดอร์ผลลัพธ์ระหว่างรัน
+
+### `run/`
+
+สร้างขึ้นเมื่อรันเกมหรือเมื่อบอทบันทึกรายงาน
+
+ไฟล์สำคัญ:
+
+- `auto-bot-report.txt`: รายงานแต่ละรอบของบอท
+- `auto-bot-q-table.tsv`: ตำแหน่งที่เตรียมไว้สำหรับ Q-table หากเชื่อม RL เข้ากับ controller
+
+รายงานจะมีข้อมูลระยะเวลา จำนวนไม้ จำนวนแร่ จำนวนมอนสเตอร์ที่ต่อสู้ จำนวนที่กำจัด และเหตุผลที่หยุด
+
+---
+
+## 10. สิ่งที่ยังทำไม่ได้
+
+- ยังไม่เลือกหรือสร้างเครื่องมือจากวัตถุดิบเอง
+- ยังไม่กินอาหารอัตโนมัติ
+- ยังไม่จัด inventory แบบเต็มรูปแบบ
+- ยังไม่เปิดกล่องหรือดึงของจากกล่อง
+- ยังไม่คราฟต์ crafting table, ขวาน หรือพลั่วจริง
+- ยังไม่ทิ้งของหรือย้ายของเมื่อกระเป๋าเต็ม
+- ยังไม่มี pathfinding A* สำหรับเส้นทางไกล
+- ยังเดินขึ้นบันไดหรือกระโดดข้ามสิ่งกีดขวางอย่างเป็นระบบไม่ได้
+- ยังไม่ขุดเปิดทางเพื่อเข้าถึงแร่ที่ถูกปิดบัง
+- ยังไม่มีระบบภารกิจหลายขั้นตอน
+- Q-learning ยังไม่ใช่ controller หลัก
+- ResourcePlanner ยังเป็นรายการทรัพยากรแบบตายตัว
+- Perception ยังอ่านจาก world state ไม่ใช่การมองภาพแบบมนุษย์
+
+---
+
+## 11. แผนพัฒนาต่อ
+
+1. เพิ่มระบบกินอาหารและเลือกอาหารที่เหมาะสม
+2. ตรวจ durability ของเครื่องมือ
+3. สร้าง `CraftingManager`
+4. สร้าง `ContainerManager` สำหรับกล่องและ container
+5. ขยาย `InventoryManager` ให้ย้ายและจัดเรียงของ
+6. ขยาย `ResourcePlanner` ให้รับเป้าหมายจากคำสั่งผู้ใช้
+7. สร้างระบบภารกิจหลายขั้นตอน
+8. เพิ่ม pathfinding แบบ grid หรือ A*
+9. เพิ่ม recovery เมื่อทางตันหรือเป้าหมายหาย
+10. เพิ่ม Task Verifier เพื่อยืนยันว่าคำสั่งสำเร็จจริง
+11. เชื่อม `PerceptionSnapshot` เข้ากับ `RlState`
+12. เชื่อม `RlAction` เข้ากับ controller จริง
+13. เก็บ state, action และ reward เพื่อวิเคราะห์การเรียนรู้
+14. เพิ่ม automated tests และทดสอบในโลก Minecraft จริง
+
+---
+
+## 12. สรุปสำหรับการนำเสนอ
+
+Minecraft Auto Bot เป็น Fabric Client Mod ที่ควบคุมผู้เล่นใน Singleplayer ผ่าน Client Tick Event โดยมีระบบรับรู้โลกจาก Minecraft API และระบบตัดสินใจแบบ heuristic
+
+บอทสามารถ:
+
+- เปิด/ปิดโหมดอัตโนมัติ
+- ตรวจความปลอดภัย
+- ต่อสู้กับมอนสเตอร์
+- ค้นหาและตัดไม้
+- ค้นหาและขุดแร่
+- เลือกเครื่องมือใน Hotbar
+- ค้นหาและเดินไปเก็บไอเทมที่ตกพื้น
+- ตรวจสอบว่าเก็บไอเทมสำเร็จหรือไม่
+- บันทึกรายงานการทำงาน
+
+โครงสร้าง Q-learning ถูกเตรียมไว้เพื่อพัฒนาให้บอทเรียนรู้จากผลลัพธ์ในอนาคต แต่ยังไม่ได้ควบคุมบอทหลักทั้งหมด ระบบต่อยอดที่สำคัญคือ Inventory, Crafting, Container, Resource Planning และ Pathfinding

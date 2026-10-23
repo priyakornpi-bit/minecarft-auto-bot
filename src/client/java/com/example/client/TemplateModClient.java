@@ -24,9 +24,15 @@ import net.minecraft.tags.FluidTags;
 import net.minecraft.tags.ItemTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.component.SwingAnimation;
 import net.minecraft.world.level.block.state.BlockState;
+
+import com.example.client.inventory.InventoryManager;
+import com.example.client.perception.PerceptionSnapshot;
+import com.example.client.planning.ResourcePlanner;
 
 public class TemplateModClient implements ClientModInitializer {
 	private static KeyMapping toggleKey;
@@ -47,6 +53,11 @@ public class TemplateModClient implements ClientModInitializer {
 	private static BlockPos targetOre;
 	private static BlockPos targetWood;
 	private static LivingEntity targetMob;
+	private static ItemEntity targetItem;
+	private static ItemStack targetItemStack;
+	private static int targetItemCountBefore;
+	private static ItemCollectionStatus itemCollectionStatus = ItemCollectionStatus.NONE;
+	private static PerceptionSnapshot latestPerception;
 	private static final KeyMapping.Category KEY_CATEGORY =
 			KeyMapping.Category.register(Identifier.fromNamespaceAndPath("minecraft-auto-bot", "controls"));
 
@@ -84,6 +95,10 @@ public class TemplateModClient implements ClientModInitializer {
 				targetOre = null;
 				targetWood = null;
 				targetMob = null;
+				targetItem = null;
+				targetItemStack = null;
+				targetItemCountBefore = 0;
+				itemCollectionStatus = ItemCollectionStatus.NONE;
 				chatMessage(client, "The system is running.");
 				message(client, "Automatic mode enabled: moving, gathering wood, defending, and mining.");
 			} else {
@@ -97,6 +112,10 @@ public class TemplateModClient implements ClientModInitializer {
 			targetOre = null;
 			targetWood = null;
 			targetMob = null;
+			targetItem = null;
+			targetItemStack = null;
+			targetItemCountBefore = 0;
+			itemCollectionStatus = ItemCollectionStatus.NONE;
 			stopInputs(client);
 			finishRun(client, "Emergency stop.");
 			message(client, "Emergency stop: automatic control disabled.");
@@ -111,6 +130,7 @@ public class TemplateModClient implements ClientModInitializer {
 		if (!autoMode || client.player == null || client.level == null || client.getSingleplayerServer() == null) {
 			return;
 		}
+		latestPerception = PerceptionSnapshot.capture(client);
 		runTicks++;
 		if (runTicks % 20 == 0) {
 			chatMessage(client, "The system is running: " + elapsedSeconds() + " seconds.");
@@ -131,6 +151,18 @@ public class TemplateModClient implements ClientModInitializer {
 		targetMob = nearbyHostile;
 		if (targetMob != null) {
 			handleMob(client);
+			return;
+		}
+		if (targetItem == null || !targetItem.isAlive()) {
+			targetItem = findNearbyItem(client);
+			if (targetItem != null) {
+				targetItemStack = targetItem.getItem().copy();
+				targetItemCountBefore = countMatchingItems(client, targetItemStack);
+				itemCollectionStatus = ItemCollectionStatus.APPROACHING;
+			}
+		}
+		if (targetItem != null) {
+			handleItem(client);
 			return;
 		}
 		if (countLogs(client) < 256) {
@@ -179,6 +211,7 @@ public class TemplateModClient implements ClientModInitializer {
 		float pitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
 		player.setYRot(yaw);
 		player.setXRot(pitch);
+		selectTool(client, "pickaxe");
 		client.options.keyAttack.setDown(true);
 	}
 
@@ -203,6 +236,7 @@ public class TemplateModClient implements ClientModInitializer {
 			stopInputs(client);
 			return;
 		}
+
 		faceEntity(player, targetMob);
 		double distance = player.distanceTo(targetMob);
 		client.options.keyUp.setDown(distance > 2.8);
@@ -213,6 +247,86 @@ public class TemplateModClient implements ClientModInitializer {
 			player.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, true);
 			mobAttackCooldown = 4;
 		}
+	}
+
+	private static ItemEntity findNearbyItem(Minecraft client) {
+		var player = client.player;
+		if (player == null || client.level == null) return null;
+		return client.level.getEntitiesOfClass(
+				ItemEntity.class,
+				player.getBoundingBox().inflate(16.0),
+				item -> item.isAlive() && ResourcePlanner.isWantedItem(item)
+						&& InventoryManager.canStore(player, item.getItem())
+		).stream()
+				.min((first, second) -> Double.compare(
+						first.distanceToSqr(player), second.distanceToSqr(player)))
+				.orElse(null);
+	}
+
+	private static void handleItem(Minecraft client) {
+		var player = client.player;
+		if (player == null || targetItem == null || !targetItem.isAlive()) {
+			if (player != null && targetItemStack != null) {
+				int countAfter = countMatchingItems(client, targetItemStack);
+				if (countAfter > targetItemCountBefore) {
+					itemCollectionStatus = ItemCollectionStatus.COLLECTED;
+					chatMessage(client, "Item collected: "
+							+ BuiltInRegistries.ITEM.getKey(targetItemStack.getItem()).getPath());
+				} else if (!InventoryManager.canStore(player, targetItemStack)) {
+					itemCollectionStatus = ItemCollectionStatus.INVENTORY_FULL;
+					chatMessage(client, "Item not collected: inventory is full.");
+				} else {
+					itemCollectionStatus = ItemCollectionStatus.DESPAWNED;
+				}
+			}
+			targetItem = null;
+			targetItemStack = null;
+			targetItemCountBefore = 0;
+			stopInputs(client);
+			return;
+		}
+		double dx = targetItem.getX() - player.getX();
+		double dy = targetItem.getY() - player.getEyeY();
+		double dz = targetItem.getZ() - player.getZ();
+		double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+		if (distance <= 1.5) {
+			stopInputs(client);
+			return;
+		}
+		facePosition(player, dx, dy, dz);
+		if (blockedAhead(client, player)) {
+			itemCollectionStatus = ItemCollectionStatus.INACCESSIBLE;
+			handleDetour(client, player);
+			return;
+		}
+		client.options.keyUp.setDown(true);
+		client.options.keyAttack.setDown(false);
+	}
+
+	private static int countMatchingItems(Minecraft client, ItemStack target) {
+		return client.player == null ? 0 : InventoryManager.count(client.player, target);
+	}
+
+	private static boolean blockedAhead(Minecraft client, net.minecraft.client.player.LocalPlayer player) {
+		BlockPos ahead = player.blockPosition().relative(player.getDirection());
+		return !isEmptyCollision(client.level, ahead) || !isEmptyCollision(client.level, ahead.above());
+	}
+
+	private static void handleDetour(Minecraft client, net.minecraft.client.player.LocalPlayer player) {
+		Direction direction = player.getDirection();
+		Direction left = direction.getCounterClockWise();
+		Direction right = direction.getClockWise();
+		Direction detour = canStandAt(client.level, player.blockPosition().relative(left))
+				? left
+				: canStandAt(client.level, player.blockPosition().relative(right)) ? right : null;
+		if (detour == null) {
+			stopInputs(client);
+			return;
+		}
+		player.setYRot(detour.toYRot());
+		player.setXRot(0.0F);
+		client.options.keyUp.setDown(true);
+		client.options.keyAttack.setDown(false);
 	}
 
 	private static BlockPos findNearbyLog(Minecraft client, int radius) {
@@ -328,6 +442,7 @@ public class TemplateModClient implements ClientModInitializer {
 		}
 		blockedTicks = 0;
 		facePosition(player, dx, dy, dz);
+		selectTool(client, "axe");
 		client.options.keyUp.setDown(distance > 4.0);
 		client.options.keyAttack.setDown(distance <= 4.5);
 	}
@@ -374,6 +489,37 @@ public class TemplateModClient implements ClientModInitializer {
 		return best;
 	}
 
+	private static void selectTool(Minecraft client, String toolType) {
+		if (client.player == null) return;
+		var inventory = client.player.getInventory();
+		int selectedSlot = inventory.getSelectedSlot();
+		int bestSlot = selectedSlot;
+		int bestScore = toolScore(inventory.getItem(selectedSlot), toolType);
+		for (int slot = 0; slot < 9; slot++) {
+			int score = toolScore(inventory.getItem(slot), toolType);
+			if (score > bestScore) {
+				bestScore = score;
+				bestSlot = slot;
+			}
+		}
+		if (bestSlot != selectedSlot && bestScore > 0) {
+			inventory.setSelectedSlot(bestSlot);
+		}
+	}
+
+	private static int toolScore(net.minecraft.world.item.ItemStack stack, String toolType) {
+		if (stack.isEmpty()) return 0;
+		String path = BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath();
+		if (!path.endsWith("_" + toolType)) return 0;
+		if (path.startsWith("wooden_")) return 1;
+		if (path.startsWith("stone_")) return 2;
+		if (path.startsWith("iron_")) return 3;
+		if (path.startsWith("golden_")) return 2;
+		if (path.startsWith("diamond_")) return 4;
+		if (path.startsWith("netherite_")) return 5;
+		return 1;
+	}
+
 	private static String getSafetyStopReason(Minecraft client) {
 		var player = client.player;
 		var level = client.level;
@@ -417,6 +563,9 @@ public class TemplateModClient implements ClientModInitializer {
 		targetOre = null;
 		targetWood = null;
 		targetMob = null;
+		targetItem = null;
+		targetItemStack = null;
+		targetItemCountBefore = 0;
 		scanCooldown = 0;
 		woodScanCooldown = 0;
 		woodSearchRadius = 16;
