@@ -9,8 +9,13 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
 import com.mojang.blaze3d.platform.InputConstants;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
@@ -71,6 +76,19 @@ public class TemplateModClient implements ClientModInitializer {
 				"key.minecraft-auto-bot.emergency_stop",
 				InputConstants.getKey("key.keyboard.period").getValue(),
 				KEY_CATEGORY);
+		ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> dispatcher.register(
+				LiteralArgumentBuilder.<FabricClientCommandSource>literal("autobot")
+						.then(LiteralArgumentBuilder.<FabricClientCommandSource>literal("wood")
+								.then(RequiredArgumentBuilder.<FabricClientCommandSource, Integer>argument(
+										"amount", IntegerArgumentType.integer(0, 2304))
+										.executes(context -> {
+											ResourcePlanner.setWoodTarget(
+													IntegerArgumentType.getInteger(context, "amount"));
+											context.getSource().sendFeedback(Component.literal(
+													"[Auto Bot] Wood target set to "
+															+ ResourcePlanner.woodTarget() + " logs."));
+											return 1;
+										})))));
 		ClientTickEvents.END_CLIENT_TICK.register(TemplateModClient::onClientTick);
 	}
 
@@ -165,7 +183,7 @@ public class TemplateModClient implements ClientModInitializer {
 			handleItem(client);
 			return;
 		}
-		if (countLogs(client) < 256) {
+		if (ResourcePlanner.needsMoreWood(countLogs(client))) {
 			if (targetWood == null || !isLog(client.level, targetWood)) {
 				targetWood = findNearbyLog(client, woodSearchRadius);
 			}
@@ -185,7 +203,8 @@ public class TemplateModClient implements ClientModInitializer {
 		}
 		if (targetWood != null) {
 			targetWood = null;
-			chatMessage(client, "Wood target reached: " + countLogs(client) + " logs.");
+			chatMessage(client, "Wood target reached: " + countLogs(client) + "/"
+					+ ResourcePlanner.woodTarget() + " logs.");
 		}
 		if (scanCooldown-- <= 0) {
 			scanCooldown = 10;

@@ -13,6 +13,8 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.level.block.state.BlockState;
 
+import com.example.client.container.ContainerManager;
+
 /**
  * ภาพรวมสถานะโลก ณ หนึ่งช่วงเวลา ใช้เป็นข้อมูลกลางให้ระบบวางแผนและกู้คืนการทำงาน
  * โดยคลาสนี้มีหน้าที่อ่านข้อมูลเท่านั้นและไม่สั่งให้บอทเคลื่อนที่หรือแก้ไขโลก
@@ -26,6 +28,7 @@ public record PerceptionSnapshot(
 		BlockPos nearestHostile,
 		int nearbyItemStacks,
 		BlockPos nearestItem,
+		BlockPos nearestContainer,
 		BlockPos nearestLog,
 		BlockPos nearestOre,
 		boolean lavaNearby,
@@ -53,6 +56,7 @@ public record PerceptionSnapshot(
 				nearestEntity(origin, hostiles),
 				items.size(),
 				nearestEntity(origin, items),
+				ContainerManager.findNearestContainer(level, origin, 16),
 				findNearestBlock(level, origin, 16, true),
 				findNearestBlock(level, origin, 6, false),
 				hasNearbyLava(level, origin, 3),
@@ -61,7 +65,7 @@ public record PerceptionSnapshot(
 	}
 
 	private static PerceptionSnapshot unavailable() {
-		return new PerceptionSnapshot(false, BlockPos.ZERO, 0.0F, 0, 0, null, 0, null, null, null,
+		return new PerceptionSnapshot(false, BlockPos.ZERO, 0.0F, 0, 0, null, 0, null, null, null, null,
 				false, false, false);
 	}
 
