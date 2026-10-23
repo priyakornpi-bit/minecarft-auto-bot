@@ -2,45 +2,63 @@ package com.example.client.navigation;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
 import java.util.Set;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 
-/** A* แบบ grid สำหรับค้นหาเส้นทางสั้นในพื้นที่ที่บอทรู้ข้อมูลแล้ว */
+/** A* แบบ grid สำหรับหาเส้นทางบนช่องที่ยืนได้ในข้อมูลโลกฝั่ง client */
 public final class GridPathfinder {
 	private static final Direction[] HORIZONTAL = {
 			Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST
 	};
 
+	/** หาเส้นทางไปยังเป้าหมายเดียว โดยคืน path ที่มีตำแหน่งเริ่มต้นรวมอยู่ด้วย */
 	public List<BlockPos> findPath(BlockPos start, BlockPos goal, Passability passability, int maxNodes) {
-		if (!passability.canStandAt(start) || !passability.canStandAt(goal)) return List.of();
+		return findPathToAny(start, List.of(goal), passability, maxNodes);
+	}
+
+	/** หาเส้นทางไปยังจุดยืนใดจุดหนึ่งรอบเป้าหมาย เช่น จุดที่อยู่ใกล้ต้นไม้ */
+	public List<BlockPos> findPathToAny(
+			BlockPos start, Collection<BlockPos> goals, Passability passability, int maxNodes) {
+		Set<BlockPos> goalSet = new HashSet<>();
+		for (BlockPos goal : goals) {
+			if (passability.canStandAt(goal)) goalSet.add(goal.immutable());
+		}
+		if (goalSet.isEmpty() || !passability.canStandAt(start) || maxNodes <= 0) return List.of();
+		if (goalSet.contains(start)) return List.of(start.immutable());
+
 		Map<BlockPos, BlockPos> cameFrom = new HashMap<>();
 		Map<BlockPos, Integer> cost = new HashMap<>();
 		Set<BlockPos> closed = new HashSet<>();
-		ArrayDeque<BlockPos> open = new ArrayDeque<>();
-		open.add(start);
+		PriorityQueue<Node> open = new PriorityQueue<>(Comparator
+				.comparingInt(Node::estimatedTotal)
+				.thenComparingInt(Node::cost));
 		cost.put(start, 0);
+		open.add(new Node(start.immutable(), 0, heuristic(start, goalSet)));
 
 		for (int visited = 0; !open.isEmpty() && visited < maxNodes; visited++) {
-			BlockPos current = open.stream()
-					.min(Comparator.comparingInt(pos -> cost.get(pos) + heuristic(pos, goal)))
-					.orElseThrow();
-			open.remove(current);
-			if (current.equals(goal)) return reconstruct(cameFrom, current);
+			Node entry = open.remove();
+			BlockPos current = entry.position();
+			if (entry.cost() != cost.getOrDefault(current, Integer.MAX_VALUE)) continue;
+			if (goalSet.contains(current)) return reconstruct(cameFrom, current);
 			if (!closed.add(current)) continue;
+
 			for (BlockPos next : neighbours(current, passability)) {
 				if (closed.contains(next)) continue;
-				int nextCost = cost.get(current) + 1;
+				int nextCost = entry.cost() + 1;
 				if (nextCost < cost.getOrDefault(next, Integer.MAX_VALUE)) {
-					cameFrom.put(next, current);
-					cost.put(next, nextCost);
-					if (!open.contains(next)) open.add(next);
+					BlockPos stableNext = next.immutable();
+					cameFrom.put(stableNext, current);
+					cost.put(stableNext, nextCost);
+					open.add(new Node(stableNext, nextCost, heuristic(next, goalSet)));
 				}
 			}
 		}
@@ -60,10 +78,15 @@ public final class GridPathfinder {
 		return result;
 	}
 
-	private static int heuristic(BlockPos first, BlockPos second) {
-		return Math.abs(first.getX() - second.getX())
-				+ Math.abs(first.getY() - second.getY())
-				+ Math.abs(first.getZ() - second.getZ());
+	private static int heuristic(BlockPos position, Collection<BlockPos> goals) {
+		int best = Integer.MAX_VALUE;
+		for (BlockPos goal : goals) {
+			best = Math.min(best,
+					Math.abs(position.getX() - goal.getX())
+							+ Math.abs(position.getY() - goal.getY())
+							+ Math.abs(position.getZ() - goal.getZ()));
+		}
+		return best;
 	}
 
 	private static List<BlockPos> reconstruct(Map<BlockPos, BlockPos> cameFrom, BlockPos current) {
@@ -76,12 +99,16 @@ public final class GridPathfinder {
 		return List.copyOf(path);
 	}
 
+	private record Node(BlockPos position, int cost, int estimatedTotal) {
+	}
+
 	@FunctionalInterface
 	public interface Passability {
 		boolean canStandAt(BlockPos position);
 
-		default boolean hasFloorAt(BlockPos position) {
-			return canStandAt(position);
+		/** รับตำแหน่งของบล็อกที่รองรับเท้า ไม่ใช่ตำแหน่งเท้าของผู้เล่น */
+		default boolean hasFloorAt(BlockPos floorPosition) {
+			return canStandAt(floorPosition);
 		}
 	}
 }

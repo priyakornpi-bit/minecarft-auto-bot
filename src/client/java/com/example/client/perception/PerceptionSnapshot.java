@@ -14,6 +14,7 @@ import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.level.block.state.BlockState;
 
 import com.example.client.container.ContainerManager;
+import com.example.client.inventory.InventoryManager;
 
 /**
  * ภาพรวมสถานะโลก ณ หนึ่งช่วงเวลา ใช้เป็นข้อมูลกลางให้ระบบวางแผนและกู้คืนการทำงาน
@@ -31,6 +32,8 @@ public record PerceptionSnapshot(
 		BlockPos nearestContainer,
 		BlockPos nearestLog,
 		BlockPos nearestOre,
+				int axeDurabilityPercent,
+				int shovelDurabilityPercent,
 		boolean lavaNearby,
 		boolean blockedAhead,
 		boolean missingFloorAhead) {
@@ -59,13 +62,15 @@ public record PerceptionSnapshot(
 				ContainerManager.findNearestContainer(level, origin, 16),
 				findNearestBlock(level, origin, 16, true),
 				findNearestBlock(level, origin, 6, false),
+				InventoryManager.bestToolRemainingPercent(player, "axe"),
+				InventoryManager.bestToolRemainingPercent(player, "shovel"),
 				hasNearbyLava(level, origin, 3),
 				isBlockedAhead(level, player),
 				isMissingFloorAhead(level, player));
 	}
 
 	private static PerceptionSnapshot unavailable() {
-		return new PerceptionSnapshot(false, BlockPos.ZERO, 0.0F, 0, 0, null, 0, null, null, null, null,
+		return new PerceptionSnapshot(false, BlockPos.ZERO, 0.0F, 0, 0, null, 0, null, null, null, null, -1, -1,
 				false, false, false);
 	}
 
