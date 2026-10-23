@@ -4,7 +4,7 @@ Fabric client mod for singleplayer automation experiments.
 
 ## Controls
 
-- **,** toggles automatic mode. The player gathers nearby logs, defends against nearby hostile mobs, then scans nearby blocks for ore.
+- **.** toggles automatic mode. The player gathers nearby logs, defends against nearby hostile mobs, then scans nearby blocks for ore.
 - **.** immediately disables automation and releases the movement and attack controls.
 
 Automatic mode only runs in a local singleplayer world. When a run ends, a report is appended to `run/auto-bot-report.txt` with duration, log and ore item gains, defeated hostile mobs, and the stop reason. The ore scan checks a small area around the player and mines the nearest exposed ore block. This is an early example, so it does not manage tools or inventory.
