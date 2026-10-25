@@ -33,7 +33,9 @@ import net.minecraft.tags.ItemTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.item.ItemEntity;
-import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.world.entity.monster.Enemy;
+import net.minecraft.world.entity.monster.Creeper;
+import net.minecraft.world.entity.monster.warden.Warden;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.component.SwingAnimation;
 import net.minecraft.world.level.block.state.BlockState;
@@ -72,6 +74,9 @@ public class TemplateModClient implements ClientModInitializer {
 	private static int foodNoticeCooldown;
 	private static int toolNoticeCooldown;
 	private static int durabilityNoticeCooldown;
+	private static int respawnCooldown;
+	private static boolean deathRecoveryPending;
+	private static int criticalJumpTicks;
 	private static int rlActionTicks;
 	private static RlAction activeRlAction;
 	private static BlockPos targetOre;
@@ -148,6 +153,9 @@ public class TemplateModClient implements ClientModInitializer {
 				previousFoodSlot = -1;
 				foodNoticeCooldown = 0;
 				toolNoticeCooldown = 0;
+				respawnCooldown = 0;
+				deathRecoveryPending = false;
+				criticalJumpTicks = 0;
 				rlActionTicks = 0;
 				activeRlAction = null;
 				clearPath();
@@ -190,6 +198,11 @@ public class TemplateModClient implements ClientModInitializer {
 		if (!autoMode || client.player == null || client.level == null || client.getSingleplayerServer() == null) {
 			return;
 		}
+		if (!client.player.isAlive()) {
+			handleDeathAndRespawn(client);
+			return;
+		}
+		deathRecoveryPending = false;
 		latestPerception = PerceptionSnapshot.capture(client);
 		runTicks++;
 		checkToolDurability(client);
@@ -197,20 +210,21 @@ public class TemplateModClient implements ClientModInitializer {
 			chatMessage(client, "The system is running: " + elapsedSeconds() + " seconds.");
 		}
 		if (autoEating && client.player.getFoodData().getFoodLevel() >= 20) stopEating(client, true);
-		String safetyReason = getSafetyStopReason(client);
-		if (safetyReason != null) {
-			stopSafely(client, safetyReason);
-			return;
-		}
 		if (targetMob != null && !targetMob.isAlive()) {
 			defeatedMobs++;
 			targetMob = null;
+			criticalJumpTicks = 0;
 		}
 		LivingEntity nearbyHostile = findNearbyHostile(client);
 		if (nearbyHostile != null && nearbyHostile != targetMob) {
 			engagedMobs++;
 		}
 		targetMob = nearbyHostile;
+		// Creeper และ Warden อันตรายแม้ยังไม่ถึงระยะโจมตี จึงไม่ปล่อยให้ RL เลือกเข้าไปสู้
+		if (mustKeepDistanceFrom(targetMob, client.player)) {
+			handleFlee(client);
+			return;
+		}
 		RlAction action = chooseRlAction(client);
 		if (action == RlAction.EAT && handleAutoEating(client)) return;
 		if (action == RlAction.FLEE && targetMob != null) {
@@ -307,7 +321,7 @@ public class TemplateModClient implements ClientModInitializer {
 		}
 		lookDownWhileSearchingForTree(client);
 		BlockPos ahead = client.player.blockPosition().relative(client.player.getDirection());
-		if (canStandAt(client.level, ahead)) client.options.keyUp.setDown(true);
+		if (canStandAt(client.level, ahead)) startSprintForward(client, false);
 		else stopInputs(client);
 		return true;
 	}
@@ -325,7 +339,7 @@ public class TemplateModClient implements ClientModInitializer {
 		if (targetOre == null) {
 			BlockPos ahead = client.player.blockPosition().relative(client.player.getDirection());
 			if (canStandAt(client.level, ahead)) {
-				client.options.keyUp.setDown(true);
+				startSprintForward(client, false);
 				client.options.keyAttack.setDown(false);
 			} else stopInputs(client);
 			return;
@@ -349,10 +363,11 @@ public class TemplateModClient implements ClientModInitializer {
 		facePosition(player, dx, dy, dz);
 		if (!selectTool(client, "pickaxe")) return;
 		client.options.keyUp.setDown(false);
+		client.options.keySprint.setDown(false);
 		client.options.keyAttack.setDown(distance <= 4.5);
 	}
 
-	/** ถอยไปยังจุดปลอดภัยเมื่อเลือดน้อยและมีศัตรูอยู่ใกล้ */
+	/** ถอยไปยังระยะปลอดภัยของศัตรู โดย Creeper และ Warden จะได้ระยะมากเป็นพิเศษ */
 	private static void handleFlee(Minecraft client) {
 		if (client.player == null || targetMob == null) {
 			stopInputs(client);
@@ -362,10 +377,11 @@ public class TemplateModClient implements ClientModInitializer {
 		double dx = player.getX() - targetMob.getX();
 		double dz = player.getZ() - targetMob.getZ();
 		double length = Math.max(0.001, Math.sqrt(dx * dx + dz * dz));
+		double escapeDistance = safeDistance(targetMob) + 4.0;
 		BlockPos escapeTarget = BlockPos.containing(
-				player.getX() + dx / length * 6.0,
+				player.getX() + dx / length * escapeDistance,
 				player.getY(),
-				player.getZ() + dz / length * 6.0);
+				player.getZ() + dz / length * escapeDistance);
 		NavigationResult result = navigateToInteraction(client, escapeTarget, 0.6);
 		if (result == NavigationResult.NO_PATH) {
 			Direction left = player.getDirection().getCounterClockWise();
@@ -373,8 +389,7 @@ public class TemplateModClient implements ClientModInitializer {
 			if (!canStandAt(client.level, detour)) detour = player.blockPosition().relative(left.getOpposite());
 			if (canStandAt(client.level, detour)) {
 				player.setYRot(left.toYRot());
-				client.options.keyUp.setDown(true);
-				client.options.keyJump.setDown(player.onGround());
+				startSprintForward(client, player.onGround());
 			} else stopInputs(client);
 		}
 	}
@@ -436,9 +451,8 @@ public class TemplateModClient implements ClientModInitializer {
 		double mx = next.getX() + 0.5 - player.getX();
 		double mz = next.getZ() + 0.5 - player.getZ();
 		facePosition(player, mx, 0.0, mz);
-		client.options.keyUp.setDown(true);
+		startSprintForward(client, shouldJumpTowardNext(client, next));
 		client.options.keyAttack.setDown(false);
-		client.options.keyJump.setDown(next.getY() > player.blockPosition().getY() && player.onGround());
 		return NavigationResult.MOVING;
 	}
 
@@ -449,19 +463,45 @@ public class TemplateModClient implements ClientModInitializer {
 		pathRefreshCooldown = 0;
 	}
 
+	/** กระโดดเมื่อ A* ต้องขึ้นหนึ่งบล็อก หรือมีบล็อกเตี้ยขวางและมีจุดลงที่ยืนได้ */
+	private static boolean shouldJumpTowardNext(Minecraft client, BlockPos next) {
+		var player = client.player;
+		if (player == null || !player.onGround()) return false;
+		BlockPos feet = player.blockPosition();
+		if (next.getY() > feet.getY()) return true;
+		BlockPos ahead = feet.relative(player.getDirection());
+		return !isEmptyCollision(client.level, ahead)
+				&& isEmptyCollision(client.level, ahead.above())
+				&& canStandAt(client.level, ahead.above());
+	}
+
 	private static LivingEntity findNearbyHostile(Minecraft client) {
 		var player = client.player;
 		if (player == null || client.level == null) {
 			return null;
 		}
+		// Slime ไม่ได้สืบทอด Monster ใน Minecraft เวอร์ชันนี้ แต่เป็น Enemy เช่นเดียวกับศัตรูทั่วไป
 		return client.level.getEntitiesOfClass(
-				Monster.class,
-				player.getBoundingBox().inflate(12.0),
-				LivingEntity::isAlive
+				LivingEntity.class,
+				player.getBoundingBox().inflate(24.0),
+				mob -> mob instanceof Enemy && mob.isAlive()
+						&& mob.distanceToSqr(player) <= safeDistance(mob) * safeDistance(mob)
 		).stream()
 				.min((first, second) -> Double.compare(
 						first.distanceToSqr(player), second.distanceToSqr(player)))
 				.orElse(null);
+	}
+
+	/** ระยะนี้กัน Creeper ระเบิด และกัน Warden ที่โจมตีแรง/ไกลกว่ามอนสเตอร์ทั่วไป */
+	private static double safeDistance(LivingEntity mob) {
+		if (mob instanceof Warden) return 24.0;
+		if (mob instanceof Creeper) return 12.0;
+		return 12.0;
+	}
+
+	private static boolean mustKeepDistanceFrom(LivingEntity mob, net.minecraft.client.player.LocalPlayer player) {
+		return (mob instanceof Creeper || mob instanceof Warden)
+				&& player.distanceToSqr(mob) <= safeDistance(mob) * safeDistance(mob);
 	}
 
 	/** เริ่มกินเมื่อระดับอาหารต่ำ แล้วถือปุ่มใช้ไอเทมจนอาหารกลับมาเต็ม */
@@ -479,8 +519,11 @@ public class TemplateModClient implements ClientModInitializer {
 		if (foodSlot < 0) {
 			stopEating(client, true);
 			if (food <= 6) {
-				stopSafely(client, "Food is critical and no safe food is available in the hotbar.");
-				return true;
+				if (foodNoticeCooldown-- <= 0) {
+					foodNoticeCooldown = 100;
+					chatMessage(client, "Food is critical but no safe food is in the hotbar; continuing until you stop it.");
+				}
+				return false;
 			}
 			if (foodNoticeCooldown-- <= 0) {
 				foodNoticeCooldown = 100;
@@ -539,13 +582,38 @@ public class TemplateModClient implements ClientModInitializer {
 		faceEntity(player, targetMob);
 		double distance = player.distanceTo(targetMob);
 		client.options.keyUp.setDown(distance > 2.8);
+		client.options.keySprint.setDown(distance > 3.5);
+		client.options.keyJump.setDown(false);
 		client.options.keyAttack.setDown(false);
 		if (mobAttackCooldown > 0) mobAttackCooldown--;
-		if (distance <= 3.5 && mobAttackCooldown == 0 && player.getAttackStrengthScale(0.5F) >= 0.9F) {
+		if (distance > 3.5 || mobAttackCooldown > 0 || player.getAttackStrengthScale(0.5F) < 0.9F) {
+			criticalJumpTicks = 0;
+			return;
+		}
+
+		// Critical hit ต้องโจมตีขณะกำลังตก และห้าม sprint จึงกระโดดหนึ่งครั้งก่อนแล้วรอจังหวะตก
+		if (canAttemptCritical(player)) {
+			client.options.keyUp.setDown(false);
+			client.options.keySprint.setDown(false);
+			if (player.onGround()) {
+				criticalJumpTicks = 1;
+				client.options.keyJump.setDown(true);
+				return;
+			}
+			criticalJumpTicks++;
+			if (player.getDeltaMovement().y >= 0.0 && criticalJumpTicks < 12) return;
+		}
+
+		if (distance <= 3.5) {
 			client.gameMode.attack(player, targetMob);
 			player.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, true);
 			mobAttackCooldown = 4;
+			criticalJumpTicks = 0;
 		}
+	}
+
+	private static boolean canAttemptCritical(net.minecraft.client.player.LocalPlayer player) {
+		return !player.isInWater() && !player.onClimbable() && !player.isPassenger();
 	}
 
 	private static ItemEntity findNearbyItem(Minecraft client) {
@@ -600,7 +668,7 @@ public class TemplateModClient implements ClientModInitializer {
 			handleDetour(client, player);
 			return;
 		}
-		client.options.keyUp.setDown(true);
+		startSprintForward(client, false);
 		client.options.keyAttack.setDown(false);
 	}
 
@@ -626,7 +694,7 @@ public class TemplateModClient implements ClientModInitializer {
 		}
 		player.setYRot(detour.toYRot());
 		player.setXRot(0.0F);
-		client.options.keyUp.setDown(true);
+		startSprintForward(client, false);
 		client.options.keyAttack.setDown(false);
 	}
 
@@ -712,7 +780,7 @@ public class TemplateModClient implements ClientModInitializer {
 			avoidanceTicks--;
 			player.setYRot(player.getYRot());
 			player.setXRot(0.0F);
-			client.options.keyUp.setDown(true);
+			startSprintForward(client, false);
 			client.options.keyAttack.setDown(false);
 			return;
 		}
@@ -741,7 +809,7 @@ public class TemplateModClient implements ClientModInitializer {
 			avoidanceTicks = 20;
 			player.setYRot(detour.toYRot());
 			player.setXRot(0.0F);
-			client.options.keyUp.setDown(true);
+			startSprintForward(client, false);
 			client.options.keyAttack.setDown(false);
 			return;
 		}
@@ -749,6 +817,7 @@ public class TemplateModClient implements ClientModInitializer {
 		facePosition(player, dx, dy, dz);
 		if (!selectTool(client, "axe")) return;
 		client.options.keyUp.setDown(distance > 4.0);
+		client.options.keySprint.setDown(distance > 4.0);
 		client.options.keyAttack.setDown(distance <= 4.5);
 	}
 
@@ -816,6 +885,13 @@ public class TemplateModClient implements ClientModInitializer {
 			stopInputs(client);
 			return false;
 		}
+		if (crafting == CraftingManager.CraftingStatus.NO_TABLE) {
+			BlockPos placementStand = CraftingManager.findNearbyTablePlacementStand(client, 12);
+			if (placementStand != null) {
+				NavigationResult route = navigateToInteraction(client, placementStand, 0.8);
+				if (route == NavigationResult.MOVING) return false;
+			}
+		}
 		int fallbackSlot = InventoryManager.findBestToolSlot(client.player, toolType);
 		if (fallbackSlot >= 0) {
 			if (crafting == CraftingManager.CraftingStatus.NO_MATERIALS
@@ -855,27 +931,29 @@ public class TemplateModClient implements ClientModInitializer {
 		}
 	}
 
-	private static String getSafetyStopReason(Minecraft client) {
-		var player = client.player;
-		var level = client.level;
-		if (player == null || level == null) {
-			return "World or player unavailable. Stopping.";
+	/** ตายแล้วล้างเฉพาะเป้าหมายชั่วคราว ส่งคำสั่งเกิดใหม่ และเก็บเป้าหมายหลักของผู้ใช้ไว้ */
+	private static void handleDeathAndRespawn(Minecraft client) {
+		stopInputs(client);
+		stopEating(client, false);
+		clearPath();
+		targetOre = null;
+		targetWood = null;
+		targetMob = null;
+		targetItem = null;
+		targetItemStack = null;
+		activeRlAction = null;
+		rlActionTicks = 0;
+		criticalJumpTicks = 0;
+		CraftingManager.cancel(client);
+		if (!deathRecoveryPending) {
+			RL_EPISODE.addReward(RewardConfig.defaults().deathPenalty());
+			deathRecoveryPending = true;
+			chatMessage(client, "You died. Respawning and resuming the current task.");
 		}
-		if (player.getHealth() <= 6.0F) {
-			return "Health is low. Stopping for safety.";
+		if (respawnCooldown-- <= 0) {
+			respawnCooldown = 20;
+			client.player.respawn();
 		}
-		if (player.getFoodData().getFoodLevel() <= 6 && findBestFoodSlot(player) < 0) {
-			return "Food is critical and no safe food is available in the hotbar.";
-		}
-		if (player.onClimbable() || player.isFallFlying()) {
-			return "Player is in an unsafe state. Stopping.";
-		}
-
-		BlockPos feet = player.blockPosition();
-		if (isLava(level, feet)) {
-			return "Lava detected nearby. Stopping for safety.";
-		}
-		return null;
 	}
 
 	private static boolean isLava(net.minecraft.client.multiplayer.ClientLevel level, BlockPos pos) {
@@ -884,26 +962,6 @@ public class TemplateModClient implements ClientModInitializer {
 
 	private static boolean isEmptyCollision(net.minecraft.client.multiplayer.ClientLevel level, BlockPos pos) {
 		return level.getBlockState(pos).getCollisionShape(level, pos).isEmpty();
-	}
-
-	private static void stopSafely(Minecraft client, String reason) {
-		autoMode = false;
-		targetOre = null;
-		targetWood = null;
-		targetMob = null;
-		targetItem = null;
-		targetItemStack = null;
-		targetItemCountBefore = 0;
-		scanCooldown = 0;
-		woodScanCooldown = 0;
-		woodSearchRadius = 16;
-		avoidanceTicks = 0;
-		blockedTicks = 0;
-		stopEating(client, true);
-		clearPath();
-		stopInputs(client);
-		finishRun(client, reason);
-		message(client, reason);
 	}
 
 	private static void finishRun(Minecraft client, String reason) {
@@ -950,9 +1008,17 @@ public class TemplateModClient implements ClientModInitializer {
 
 	private static void stopInputs(Minecraft client) {
 		client.options.keyUp.setDown(false);
+		client.options.keySprint.setDown(false);
 		client.options.keyAttack.setDown(false);
 		client.options.keyUse.setDown(false);
 		client.options.keyJump.setDown(false);
+	}
+
+	/** กดเดินและวิ่งพร้อมกัน; ใช้ jump เฉพาะก้าวขึ้นบล็อกเพื่อลดการกระโดดสะดุด */
+	private static void startSprintForward(Minecraft client, boolean jump) {
+		client.options.keyUp.setDown(true);
+		client.options.keySprint.setDown(true);
+		client.options.keyJump.setDown(jump);
 	}
 
 	private static void message(Minecraft client, String text) {

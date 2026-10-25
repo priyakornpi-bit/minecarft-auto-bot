@@ -321,7 +321,28 @@ public final class CraftingManager {
 	}
 
 	private static BlockPos findTableGround(Minecraft client) {
+		return findTableGround(client, client.player.blockPosition());
+	}
+
+	/** หา "จุดยืน" ที่บอทเดินไปแล้วสามารถวางโต๊ะคราฟต์ข้างตัวได้ */
+	public static BlockPos findNearbyTablePlacementStand(Minecraft client, int radius) {
+		if (client.player == null || client.level == null) return null;
 		BlockPos origin = client.player.blockPosition();
+		BlockPos nearest = null;
+		double bestDistance = Double.MAX_VALUE;
+		for (BlockPos candidate : BlockPos.betweenClosed(
+				origin.offset(-radius, -2, -radius), origin.offset(radius, 2, radius))) {
+			if (!canStandAt(client, candidate) || findTableGround(client, candidate) == null) continue;
+			double distance = candidate.distSqr(origin);
+			if (distance < bestDistance) {
+				nearest = candidate.immutable();
+				bestDistance = distance;
+			}
+		}
+		return nearest;
+	}
+
+	private static BlockPos findTableGround(Minecraft client, BlockPos origin) {
 		for (Direction direction : List.of(client.player.getDirection(), client.player.getDirection().getClockWise(),
 				client.player.getDirection().getCounterClockWise(), client.player.getDirection().getOpposite())) {
 			BlockPos ground = origin.relative(direction).below();
@@ -333,6 +354,14 @@ public final class CraftingManager {
 					&& !client.level.getFluidState(placement).is(net.minecraft.tags.FluidTags.LAVA)) return ground;
 		}
 		return null;
+	}
+
+	private static boolean canStandAt(Minecraft client, BlockPos feet) {
+		BlockPos floor = feet.below();
+		return client.level.getBlockState(floor).getCollisionShape(client.level, floor).isEmpty() == false
+				&& client.level.getBlockState(feet).getCollisionShape(client.level, feet).isEmpty()
+				&& client.level.getBlockState(feet.above()).getCollisionShape(client.level, feet.above()).isEmpty()
+				&& !client.level.getFluidState(feet).is(net.minecraft.tags.FluidTags.LAVA);
 	}
 
 	private static boolean isCraftingTable(Minecraft client, BlockPos pos) {
