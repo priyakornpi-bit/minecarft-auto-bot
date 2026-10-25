@@ -38,6 +38,23 @@ The main extension points are in `src/client/java/com/example/client/rl`: add co
 
 For setup instructions, please see the [Fabric Documentation page](https://docs.fabricmc.net/develop/getting-started/creating-a-project#setting-up) related to the IDE that you are using.
 
+## Running and reporting
+
+ใช้สคริปต์จากโฟลเดอร์โปรเจกต์เพื่อ compile, รัน unit tests และสร้าง mod artifact ตามลำดับ:
+
+```bash
+./run_bot.sh
+```
+
+สคริปต์ต้องใช้ Java 25 และจะสร้าง/อัปเดตไฟล์ดังนี้:
+
+- `run/automation-report.md` — รายงานสรุปสถานะล่าสุดของทุกขั้นตอน
+- `run/automation-run.log` — log เต็มจาก Gradle และ test
+- `build/libs/` — Fabric mod artifact เมื่อ build สำเร็จ
+- `run/auto-bot-report.txt` — รายงานการทำงานจริงที่เขียนโดยตัว mod ในเกม (ไม่ถูกเขียนทับโดยสคริปต์)
+
+สคริปต์คืนค่า exit code `0` เมื่อทุกขั้นตอนผ่าน และคืนค่าอื่นเมื่อมี compile, test หรือ build ล้มเหลว เหมาะสำหรับใช้ใน CI และการตรวจสอบก่อนเปิดเกม
+
 ## License
 
 This template is available under the CC0 license. Feel free to learn from it and incorporate it in your own projects.
