@@ -58,7 +58,7 @@ fi
 if command -v java >/dev/null 2>&1; then
     JAVA_VERSION="$(java -version 2>&1 | head -n 1)"
     echo "Java: $JAVA_VERSION" | tee -a "$LOG_FILE"
-    if java -version 2>&1 | grep -Eq 'version "(25)(\\.|")'; then
+    if java -version 2>&1 | grep -q 'version "25'; then
         record_step "ตรวจสอบ Java 25" 0
     else
         echo "คำเตือน: โปรเจกต์ต้องการ Java 25" | tee -a "$LOG_FILE"
@@ -87,7 +87,7 @@ FINISHED_AT="$(date '+%Y-%m-%d %H:%M:%S %z')"
     echo "- สิ้นสุด: $FINISHED_AT"
     echo "- Java: $JAVA_VERSION"
     echo "- สถานะรวม: $([[ "$OVERALL_STATUS" -eq 0 ]] && echo 'ผ่าน' || echo 'ล้มเหลว')"
-    echo "- รายละเอียด log: \\`run/automation-run.log\\`"
+    echo '- รายละเอียด log: `run/automation-run.log`'
     echo
     echo "## ผลการตรวจสอบ"
     echo
@@ -99,9 +99,9 @@ FINISHED_AT="$(date '+%Y-%m-%d %H:%M:%S %z')"
     echo
     echo "## ไฟล์ที่เกี่ยวข้อง"
     echo
-    echo "- รายงานจากการเล่นในเกม: \\`run/auto-bot-report.txt\\`"
-    echo "- Q-table ของระบบ RL: \\`run/auto-bot-q-table.tsv\\`"
-    echo "- Artifact ที่สร้าง: \\`build/libs/\\`"
+    echo '- รายงานจากการเล่นในเกม: `run/auto-bot-report.txt`'
+    echo '- Q-table ของระบบ RL: `run/auto-bot-q-table.tsv`'
+    echo '- Artifact ที่สร้าง: `build/libs/`'
 } > "$REPORT_FILE"
 
 cat "$REPORT_FILE"

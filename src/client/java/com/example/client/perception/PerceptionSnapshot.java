@@ -59,7 +59,7 @@ public record PerceptionSnapshot(
 				nearestEntity(origin, hostiles),
 				items.size(),
 				nearestEntity(origin, items),
-				ContainerManager.findNearestContainer(level, origin, 16),
+				ContainerManager.findNearestContainer(level, origin, 16).orElse(null),
 				findNearestBlock(level, origin, 16, true),
 				findNearestBlock(level, origin, 6, false),
 				InventoryManager.bestToolRemainingPercent(player, "axe"),
