@@ -10,6 +10,18 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 
+import com.example.client.inventory.InventoryManager;
+import com.example.client.navigation.GridPathfinder;
+import com.example.client.perception.PerceptionSnapshot;
+import com.example.client.planning.CraftingManager;
+import com.example.client.planning.ResourcePlanner;
+import com.example.client.rl.QLearningAgent;
+import com.example.client.rl.RewardCalculator;
+import com.example.client.rl.RewardConfig;
+import com.example.client.rl.RlAction;
+import com.example.client.rl.RlCommand;
+import com.example.client.rl.RlEpisode;
+import com.example.client.rl.RlState;
 import com.mojang.blaze3d.platform.InputConstants;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
@@ -33,25 +45,12 @@ import net.minecraft.tags.ItemTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.item.ItemEntity;
-import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.monster.Creeper;
+import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.monster.warden.Warden;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.component.SwingAnimation;
 import net.minecraft.world.level.block.state.BlockState;
-
-import com.example.client.inventory.InventoryManager;
-import com.example.client.navigation.GridPathfinder;
-import com.example.client.perception.PerceptionSnapshot;
-import com.example.client.planning.CraftingManager;
-import com.example.client.planning.ResourcePlanner;
-import com.example.client.rl.QLearningAgent;
-import com.example.client.rl.RewardCalculator;
-import com.example.client.rl.RewardConfig;
-import com.example.client.rl.RlAction;
-import com.example.client.rl.RlCommand;
-import com.example.client.rl.RlEpisode;
-import com.example.client.rl.RlState;
 
 public class TemplateModClient implements ClientModInitializer {
 	private static KeyMapping toggleKey;
@@ -394,67 +393,99 @@ public class TemplateModClient implements ClientModInitializer {
 		}
 	}
 
-	private enum NavigationResult { ARRIVED, MOVING, NO_PATH }
+	// [1] กำหนดชุดสถานะการนำทาง
+    private enum NavigationResult { ARRIVED, MOVING, NO_PATH }
 
-	/** เดินตาม A* แล้วคำนวณเส้นทางใหม่เมื่อเป้าหมายหรือบล็อกบนทางเปลี่ยน */
-	private static NavigationResult navigateToInteraction(Minecraft client, BlockPos target, double range) {
-		var player = client.player;
-		if (player == null || client.level == null) return NavigationResult.NO_PATH;
-		double tx = target.getX() + 0.5 - player.getX();
-		double ty = target.getY() + 0.5 - player.getEyeY();
-		double tz = target.getZ() + 0.5 - player.getZ();
-		if (tx * tx + ty * ty + tz * tz <= range * range) return NavigationResult.ARRIVED;
+    /**
+     * เดินตามเส้นทาง A* และคำนวณเส้นทางใหม่เมื่อเป้าหมายเปลี่ยน หรือบล็อกบนเส้นทางถูกขวาง
+     * 
+     * @param client ออบเจกต์ตัวควบคุมเกม Minecraft
+     * @param target พิกัดเป้าหมาย (BlockPos)
+     * @param range ระยะโต้ตอบที่อนุญาต
+     * @return NavigationResult ผลลัพธ์การนำทาง (ARRIVED, MOVING, หรือ NO_PATH)
+     */
+    private static NavigationResult navigateToInteraction(Minecraft client, BlockPos target, double range) {
+        var player = client.player;
+        
+        // [2] Guard Clause: ตรวจสอบความปลอดภัยเบื้องต้น ป้องกัน NullPointerException (NPE)
+        if (player == null || client.level == null) return NavigationResult.NO_PATH;
 
-		boolean targetChanged = pathTarget == null || !pathTarget.equals(target);
-		boolean nextBlocked = !activePath.isEmpty() && pathIndex < activePath.size()
-				&& !canStandAt(client.level, activePath.get(pathIndex));
-		if (targetChanged || activePath.isEmpty() || nextBlocked || pathRefreshCooldown-- <= 0) {
-			List<BlockPos> goals = new ArrayList<>();
-			int radius = (int) Math.ceil(range) + 1;
-			for (BlockPos candidate : BlockPos.betweenClosed(
-					target.offset(-radius, -radius, -radius), target.offset(radius, radius, radius))) {
-				if (!canStandAt(client.level, candidate)) continue;
-				double gx = candidate.getX() - target.getX();
-				double gy = candidate.getY() - target.getY();
-				double gz = candidate.getZ() - target.getZ();
-				if (gx * gx + gy * gy + gz * gz <= range * range) goals.add(candidate.immutable());
-			}
-			GridPathfinder.Passability passability = new GridPathfinder.Passability() {
-				@Override
-				public boolean canStandAt(BlockPos feet) {
-					return TemplateModClient.canStandAt(client.level, feet);
-				}
+        // [3] คำนวณระยะห่างแกน X, Y, Z ระหว่างผู้เล่นกับเป้าหมาย (อ้างอิงจากจุดศูนย์กลางบล็อก +0.5)
+        double tx = target.getX() + 0.5 - player.getX();
+        double ty = target.getY() + 0.5 - player.getEyeY();
+        double tz = target.getZ() + 0.5 - player.getZ();
 
-				@Override
-				public boolean hasFloorAt(BlockPos floor) {
-					return !isLava(client.level, floor) && !isEmptyCollision(client.level, floor);
-				}
-			};
-			activePath = PATHFINDER.findPathToAny(player.blockPosition(), goals, passability, 1800);
-			pathTarget = target.immutable();
-			pathIndex = activePath.size() > 1 ? 1 : 0;
-			pathRefreshCooldown = 10;
-			if (activePath.isEmpty()) return NavigationResult.NO_PATH;
-		}
+        // [4] หากระยะห่างปัจจุบันน้อยกว่าหรือเท่ากับระยะ range ที่กำหนด คืนค่า ARRIVED (ถึงจุดหมายแล้ว)
+        if (tx * tx + ty * ty + tz * tz <= range * range) return NavigationResult.ARRIVED;
 
-		while (pathIndex < activePath.size() && player.blockPosition().equals(activePath.get(pathIndex))) pathIndex++;
-		if (pathIndex >= activePath.size()) {
-			clearPath();
-			return NavigationResult.ARRIVED;
-		}
-		BlockPos next = activePath.get(pathIndex);
-		if (!canStandAt(client.level, next)) {
-			clearPath();
-			stopInputs(client);
-			return NavigationResult.MOVING;
-		}
-		double mx = next.getX() + 0.5 - player.getX();
-		double mz = next.getZ() + 0.5 - player.getZ();
-		facePosition(player, mx, 0.0, mz);
-		startSprintForward(client, shouldJumpTowardNext(client, next));
-		client.options.keyAttack.setDown(false);
-		return NavigationResult.MOVING;
-	}
+        // [5] เช็กเงื่อนไขการคำนวณเส้นทางใหม่: เป้าหมายเปลี่ยน หรือโหนดถัดไปถูกบล็อกขวาง
+        boolean targetChanged = pathTarget == null || !pathTarget.equals(target);
+        boolean nextBlocked = !activePath.isEmpty() && pathIndex < activePath.size()
+                && !canStandAt(client.level, activePath.get(pathIndex));
+
+        // [6] สั่งประมวลผล A* ใหม่เมื่อเข้าเงื่อนไข หรือ Cooldown หมดลง
+        if (targetChanged || activePath.isEmpty() || nextBlocked || pathRefreshCooldown-- <= 0) {
+            List<BlockPos> goals = new ArrayList<>();
+            int radius = (int) Math.ceil(range) + 1;
+
+            // สแกนหาโหนดเป้าหมายที่ยืนได้อย่างปลอดภัยรอบๆ รัศมี range
+            for (BlockPos candidate : BlockPos.betweenClosed(
+                    target.offset(-radius, -radius, -radius), target.offset(radius, radius, radius))) {
+                if (!canStandAt(client.level, candidate)) continue;
+                double gx = candidate.getX() - target.getX();
+                double gy = candidate.getY() - target.getY();
+                double gz = candidate.getZ() - target.getZ();
+                if (gx * gx + gy * gy + gz * gz <= range * range) goals.add(candidate.immutable());
+            }
+
+            // นิยามเงื่อนไข Passability สำหรับสแกนพื้นที่ผ่านได้ (ต้องไม่เป็นลาวา และมีพื้นยืน)
+            GridPathfinder.Passability passability = new GridPathfinder.Passability() {
+                @Override
+                public boolean canStandAt(BlockPos feet) {
+                    return TemplateModClient.canStandAt(client.level, feet);
+                }
+
+                @Override
+                public boolean hasFloorAt(BlockPos floor) {
+                    return !isLava(client.level, floor) && !isEmptyCollision(client.level, floor);
+                }
+            };
+
+            // เรียกใช้อัลกอริทึม A* เพื่อค้นหาเส้นทาง
+            activePath = PATHFINDER.findPathToAny(player.blockPosition(), goals, passability, 1800);
+            pathTarget = target.immutable();
+            pathIndex = activePath.size() > 1 ? 1 : 0;
+            pathRefreshCooldown = 10; // รีเซ็ต Cooldown การสแกน A* ใหม่เป็น 10 Ticks
+
+            if (activePath.isEmpty()) return NavigationResult.NO_PATH;
+        }
+
+        // [7] ขยับพิกัด pathIndex ไปยังโหนดถัดไป หากบอทยืนทับพิกัดเดิมแล้ว
+        while (pathIndex < activePath.size() && player.blockPosition().equals(activePath.get(pathIndex))) pathIndex++;
+        
+        // [8] หากเดินครบทุกโหนดในเส้นทางแล้ว ให้ล้างเส้นทางแล้ว คืนค่า ARRIVED
+        if (pathIndex >= activePath.size()) {
+            clearPath();
+            return NavigationResult.ARRIVED;
+        }
+
+        // [9] ดึงพิกัดถัดไปจากเส้นทาง หากยืนไม่ได้ให้ยกเลิกการเดิน
+        BlockPos next = activePath.get(pathIndex);
+        if (!canStandAt(client.level, next)) {
+            clearPath();
+            stopInputs(client);
+            return NavigationResult.MOVING;
+        }
+
+        // [10] คำนวณองศาหมุนหน้า และสั่งกดปุ่มเดินหน้า/กระโดดไปยังโหนดถัดไป
+        double mx = next.getX() + 0.5 - player.getX();
+        double mz = next.getZ() + 0.5 - player.getZ();
+        facePosition(player, mx, 0.0, mz);
+        startSprintForward(client, shouldJumpTowardNext(client, next));
+        client.options.keyAttack.setDown(false);
+
+        return NavigationResult.MOVING;
+    }
 
 	private static void clearPath() {
 		activePath = List.of();
@@ -681,22 +712,57 @@ public class TemplateModClient implements ClientModInitializer {
 		return !isEmptyCollision(client.level, ahead) || !isEmptyCollision(client.level, ahead.above());
 	}
 
-	private static void handleDetour(Minecraft client, net.minecraft.client.player.LocalPlayer player) {
-		Direction direction = player.getDirection();
-		Direction left = direction.getCounterClockWise();
-		Direction right = direction.getClockWise();
-		Direction detour = canStandAt(client.level, player.blockPosition().relative(left))
-				? left
-				: canStandAt(client.level, player.blockPosition().relative(right)) ? right : null;
-		if (detour == null) {
-			stopInputs(client);
-			return;
-		}
-		player.setYRot(detour.toYRot());
-		player.setXRot(0.0F);
-		startSprintForward(client, false);
-		client.options.keyAttack.setDown(false);
-	}
+	/**
+     * [Refactored 3D Detour] ฟังก์ชันหลบสิ่งกีดขวางฉุกเฉินแบบ 3 มิติ
+     * ตำแหน่งในไฟล์จริง: บรรทัดที่ 684 (ใน TemplateModClient_2.java)
+     */
+    private static void handleDetour(Minecraft client, net.minecraft.client.player.LocalPlayer player) {
+        // [1] Guard Clause: ตรวจสอบความพร้อมของตัวละครและแมปเกม ป้องกันเกม Crash
+        if (player == null || client.level == null) {
+            stopInputs(client);
+            return;
+        }
+
+        Direction direction = player.getDirection();
+        Direction left = direction.getCounterClockWise();
+        Direction right = direction.getClockWise();
+        BlockPos feet = player.blockPosition();
+
+        // [2] สแกนหาพิกัดทางเบี่ยงที่ยืนได้ปลอดภัย ทั้งฝั่งซ้ายและขวา แบบ 3 มิติ (Y+1, Y, Y-1)
+        BlockPos detourPos = find3DDetourPos(client.level, feet.relative(left));
+        Direction targetDirection = left;
+
+        if (detourPos == null) {
+            detourPos = find3DDetourPos(client.level, feet.relative(right));
+            targetDirection = right;
+        }
+
+        // [3] หากสแกนทั้งซ้ายและขวาแล้วไม่เจอจุดยืนที่ปลอดภัยเลย ให้สั่งหยุดเดิน
+        if (detourPos == null) {
+            stopInputs(client);
+            return;
+        }
+
+        // [4] หมุนมุมมอง (Yaw) ไปยังทิศทางเบี่ยงที่พบ
+        player.setYRot(targetDirection.toYRot());
+        player.setXRot(0.0F);
+
+        // [5] สั่งเดินหน้า และสั่งกระโดดอัตโนมัติถ้าจุดเบี่ยงอยู่สูงกว่าระดับเท้าเดิม (Y+1)
+        boolean needJump = detourPos.getY() > feet.getY();
+        startSprintForward(client, needJump);
+        client.options.keyAttack.setDown(false);
+    }
+
+    /**
+     * [ Helper Function เพิ่มใหม่ ] วางต่อท้ายฟังก์ชัน handleDetour (ประมาณบรรทัด 705)
+     * สแกนพิกัดยืนปลอดภัยในแนวดิ่ง (+1, 0, -1 บล็อก)
+     */
+    private static BlockPos find3DDetourPos(net.minecraft.client.multiplayer.ClientLevel level, BlockPos sidePos) {
+        if (canStandAt(level, sidePos)) return sidePos;         // ระดับความสูงเดิม (Y)
+        if (canStandAt(level, sidePos.above())) return sidePos.above(); // ขึ้นเนิน 1 บล็อก (Y+1)
+        if (canStandAt(level, sidePos.below())) return sidePos.below(); // ลงเนิน 1 บล็อก (Y-1)
+        return null;
+    }
 
 	private static BlockPos findNearbyLog(Minecraft client, int radius) {
 		var player = client.player;
